@@ -1,0 +1,44 @@
+# Payment Hub — Ingress (namespace payment-hub)
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: payment-gateway
+  namespace: payment-hub
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "*"
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: payment-api-gateway
+  namespace: payment-hub
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - payment-gateway
+  http:
+    # Precisa vir ANTES do catch-all — o painel Angular (rodando local via ng serve) fala
+    # com o scenario-runner por aqui, sem precisar de um port-forward só pra ele.
+    - match:
+        - uri:
+            prefix: /api/scenarios
+      route:
+        - destination:
+            host: scenario-runner
+            port:
+              number: 80
+      timeout: 60s
+    - route:
+        - destination:
+            host: payment-api
+            port:
+              number: 80

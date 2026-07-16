@@ -1,0 +1,312 @@
+# Payment Hub — Istio Ambient Mode config (namespace payment-hub)
+#
+# Requer o waypoint proxy aplicado (istioctl waypoint apply -n payment-hub --enroll-namespace)
+# — em Ambient puro (só ztunnel) as VirtualServices/DestinationRules HTTP e as regras de
+# AuthorizationPolicy baseadas em path são recursos L7 e não são avaliados sem waypoint; o
+# ztunnel sozinho só cobre L4 (mTLS, allow/deny por identidade sem path).
+
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: payment-hub-mtls
+  namespace: payment-hub
+spec:
+  mtls:
+    mode: STRICT
+---
+# payment-api e check-fraud viram UM único VirtualService (mesmo host) — dois objetos
+# separados pro mesmo host geram "undefined behavior" segundo o próprio istioctl analyze
+# (IST0109); a forma correta é múltiplas entradas http: na mesma VirtualService.
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: payment-api
+  namespace: payment-hub
+spec:
+  hosts:
+    - payment-api
+  http:
+    - match:
+        - uri:
+            prefix: /process-payment
+      route:
+        - destination:
+            host: payment-api
+            port:
+              number: 80
+      timeout: 10s
+      retries:
+        attempts: 3
+        perTryTimeout: 3s
+        retryOn: 5xx,reset,connect-failure
+    - match:
+        - uri:
+            prefix: /check-fraud
+      route:
+        - destination:
+            host: payment-api
+            port:
+              number: 80
+      timeout: 5s
+      retries:
+        attempts: 3
+        perTryTimeout: 1500ms
+        retryOn: 5xx,reset,connect-failure
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: payment-cache
+  namespace: payment-hub
+spec:
+  hosts:
+    - payment-cache
+  http:
+    - match:
+        - uri:
+            prefix: /check-transaction-history
+      route:
+        - destination:
+            host: payment-cache
+            port:
+              number: 80
+      timeout: 5s
+      retries:
+        attempts: 3
+        perTryTimeout: 1500ms
+        retryOn: 5xx,reset,connect-failure
+    # /get-card-limit é o salto que check-fraud usa pra alcançar o payment-db (ver
+    # api/main.go checkFraudHandler) — timeout maior porque é quem os cenários de
+    # Timeout/Circuit Breaker usam pra simular "DB lento"/"DB offline" (delay até 15s).
+    - match:
+        - uri:
+            prefix: /get-card-limit
+      route:
+        - destination:
+            host: payment-cache
+            port:
+              number: 80
+      timeout: 16s
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: payment-db
+  namespace: payment-hub
+spec:
+  hosts:
+    - payment-db
+  http:
+    - match:
+        - uri:
+            prefix: /get-chargeback-history
+      route:
+        - destination:
+            host: payment-db
+            port:
+              number: 80
+      timeout: 10s
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: settlement-queue
+  namespace: payment-hub
+spec:
+  hosts:
+    - settlement-queue
+  http:
+    - match:
+        - uri:
+            prefix: /enqueue-settlement
+      route:
+        - destination:
+            host: settlement-queue
+            port:
+              number: 80
+      timeout: 10s
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: payment-api-dr
+  namespace: payment-hub
+spec:
+  host: payment-api
+  trafficPolicy:
+    connectionPool:
+      http:
+        http1MaxPendingRequests: 100
+        maxRequestsPerConnection: 2
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 100
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: payment-cache-dr
+  namespace: payment-hub
+spec:
+  host: payment-cache
+  trafficPolicy:
+    connectionPool:
+      http:
+        http1MaxPendingRequests: 100
+        maxRequestsPerConnection: 2
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 100
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: payment-db-dr
+  namespace: payment-hub
+spec:
+  host: payment-db
+  trafficPolicy:
+    connectionPool:
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 1
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 100
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: settlement-queue-dr
+  namespace: payment-hub
+spec:
+  host: settlement-queue
+  trafficPolicy:
+    connectionPool:
+      http:
+        # 100 pra caber a rajada inteira do cenário de Backpressure (100 requisições
+        # paralelas) sem que o circuit breaker do mesh rejeite antes da fila interna do
+        # app (max 50) conseguir ser o gargalo real que o cenário quer demonstrar.
+        http1MaxPendingRequests: 100
+        maxRequestsPerConnection: 1
+    outlierDetection:
+      consecutive5xxErrors: 2
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 100
+---
+# As 3 políticas abaixo são anexadas ao WAYPOINT (targetRefs), não ao workload de destino
+# (selector). Motivo: com um waypoint no caminho, o ztunnel do pod de destino só enxerga o
+# waypoint como origem da conexão L4 ("src.identity=.../sa/waypoint") — uma AuthorizationPolicy
+# anexada via "selector" ao workload é avaliada pelo ztunnel usando essa identidade errada e
+# rejeita tudo ("allow policies exist, but none allowed"), mesmo a chamada sendo legítima. Anexar
+# ao waypoint via targetRefs faz a política ser avaliada lá, que tem visibilidade da identidade
+# mTLS original de quem chamou — e aí paths/hosts (L7) funcionam corretamente.
+
+# Cache só aceita chamadas da SA "default" (payment-api roda nela) nesses dois paths.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: payment-cache-authz
+  namespace: payment-hub
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: waypoint
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/payment-hub/sa/default"]
+      to:
+        - operation:
+            hosts: ["payment-cache", "payment-cache.payment-hub.svc.cluster.local"]
+            paths: ["/check-transaction-history", "/get-card-limit"]
+---
+# DB só aceita chamadas da SA "default" (payment-cache roda nela) nesses dois paths.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: payment-db-authz
+  namespace: payment-hub
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: waypoint
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/payment-hub/sa/default"]
+      to:
+        - operation:
+            hosts: ["payment-db", "payment-db.payment-hub.svc.cluster.local"]
+            paths: ["/get-chargeback-history", "/check-fraud-score"]
+---
+# settlement-queue tem SA própria — regra explícita de DENY pra deixar claro que ela nunca deve
+# falar direto com o DB (mesmo que uma ALLOW futura fique frouxa demais, o DENY tem prioridade).
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: settlement-deny-db
+  namespace: payment-hub
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: waypoint
+  action: DENY
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/payment-hub/sa/settlement-queue"]
+      to:
+        - operation:
+            hosts: ["payment-db", "payment-db.payment-hub.svc.cluster.local"]
+            ports: ["80"]
+---
+# IMPORTANTE: assim que QUALQUER AuthorizationPolicy com action=ALLOW é anexada ao waypoint
+# (targetRefs), o waypoint passa a default-deny TODO o tráfego que passa por ele — não só os
+# hosts citados nas ALLOW acima. payment-api e settlement-queue não tinham política própria e
+# ficaram bloqueados pra tráfego leste-oeste (só sobreviviam via ingress, que não passa pelo
+# waypoint). As duas políticas abaixo restauram acesso amplo (sem restrição de origem) pra elas
+# — são o "entrypoint público" e a "fila", não fazem sentido restritos por identidade aqui.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: payment-api-authz
+  namespace: payment-hub
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: waypoint
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            hosts: ["payment-api", "payment-api.payment-hub.svc.cluster.local"]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: settlement-queue-authz
+  namespace: payment-hub
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: waypoint
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            hosts: ["settlement-queue", "settlement-queue.payment-hub.svc.cluster.local"]

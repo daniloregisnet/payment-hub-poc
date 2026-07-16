@@ -1,0 +1,65 @@
+package main
+
+import (
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strconv"
+	"time"
+)
+
+func main() {
+	http.HandleFunc("/health", healthHandler)
+	http.HandleFunc("/check-transaction-history", checkHistoryHandler)
+	http.HandleFunc("/get-card-limit", getCardLimitHandler)
+
+	log.Println("Cache Service (Transaction Cache) listening on :8001")
+	log.Fatal(http.ListenAndServe(":8001", nil))
+}
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "OK\n")
+}
+
+func checkHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	delay := r.URL.Query().Get("delay")
+	errFlag := r.URL.Query().Get("error")
+
+	if delay != "" {
+		if d, err := strconv.Atoi(delay); err == nil {
+			time.Sleep(time.Duration(d) * time.Millisecond)
+		}
+	}
+
+	if errFlag == "true" {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, `{"error":"cache unavailable"}\n`)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"service":"cache","status":"ok","recent_transactions":5,"fraud_risk":"low","hit_rate":0.92}\n`)
+}
+
+func getCardLimitHandler(w http.ResponseWriter, r *http.Request) {
+	// Repassa delay/error adiante (não aplica aqui) — quem deve simular lentidão/erro neste
+	// cenário é o payment-db, não o cache.
+	url := "http://payment-db/get-chargeback-history?" + r.URL.Query().Encode()
+	resp, err := http.Get(url)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, `{"error":"failed to fetch from DB"}\n`)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"service":"cache","card_limit":5000.00,"db_response":%s}\n`, string(body))
+}

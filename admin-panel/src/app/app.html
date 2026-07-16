@@ -1,0 +1,15 @@
+<div class="page">
+  <header class="page-header">
+    <div>
+      <h1>Payment Hub — Painel de Cenários</h1>
+      <p class="subtitle">Dispare os cenários de demonstração do Istio Ambient Mode com um clique.</p>
+    </div>
+    <a [href]="kialiUrl" target="_blank" rel="noopener" class="btn-kiali">Abrir Kiali ↗</a>
+  </header>
+
+  <div class="grid">
+    @for (scenario of scenarios; track scenario.id) {
+      <app-scenario-card [scenario]="scenario" />
+    }
+  </div>
+</div>
