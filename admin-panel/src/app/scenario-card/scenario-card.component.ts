@@ -1,4 +1,4 @@
-import { Component, Input, inject, signal } from '@angular/core';
+import { Component, EventEmitter, Input, OnInit, Output, inject, signal } from '@angular/core';
 import { ScenarioService, SseEvent } from '../services/scenario.service';
 import { LogLevel, LogLine, ScenarioDef } from '../models/scenario.model';
 
@@ -12,8 +12,9 @@ import { LogLevel, LogLine, ScenarioDef } from '../models/scenario.model';
         <span class="icon">{{ scenario.icon }}</span>
         <div class="titles">
           <h3>{{ scenario.title }}</h3>
-          <span class="duration">{{ scenario.estimatedDuration }}</span>
+          <span class="duration">{{ scenario.estimatedDuration }} · {{ runCount() }} execuç{{ runCount() === 1 ? 'ão' : 'ões' }}</span>
         </div>
+        <button type="button" class="btn-info" title="Roteiro da demonstração" (click)="info.emit(scenario)">ℹ️</button>
         @if (lastResult() !== 'idle') {
           <span
             class="badge"
@@ -50,68 +51,80 @@ import { LogLevel, LogLine, ScenarioDef } from '../models/scenario.model';
   `,
   styles: [`
     .card {
-      border: 1px solid #dfe3e8;
+      border: 1px solid var(--border, #dfe3e8);
       border-radius: 8px;
       padding: 18px;
-      background: #fff;
+      background: var(--surface, #fff);
       display: flex;
       flex-direction: column;
       gap: 12px;
-      transition: box-shadow 150ms ease;
+      transition: box-shadow 150ms ease, background 150ms ease;
     }
     .card.running {
-      box-shadow: 0 0 0 2px #2f6f4f;
+      box-shadow: 0 0 0 2px var(--primary, #2f6f4f);
     }
     .card-header {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
     }
     .icon { font-size: 26px; }
-    .titles { flex: 1; display: flex; flex-direction: column; }
-    .titles h3 { margin: 0; font-size: 15px; }
-    .duration { font-size: 11px; color: #6b7280; }
+    .titles { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .titles h3 { margin: 0; font-size: 15px; color: var(--heading, #14202c); }
+    .duration { font-size: 11px; color: var(--text-muted, #6b7280); }
+    .btn-info {
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 4px;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .btn-info:hover { background: var(--surface-hover, #f0f0f0); }
     .badge {
       font-size: 11px;
       font-weight: 600;
       padding: 3px 8px;
       border-radius: 10px;
-      background: #f5f7fa;
-      color: #6b7280;
+      background: var(--bg-page, #f5f7fa);
+      color: var(--text-muted, #6b7280);
+      flex-shrink: 0;
     }
-    .badge-success { background: #e3f1e8; color: #234f38; }
-    .badge-error { background: #fbe4e4; color: #8a3a3a; }
-    .badge-cancelled { background: #f5f7fa; color: #6b7280; }
-    .description { margin: 0; font-size: 13px; color: #4b5563; line-height: 1.5; }
+    .badge-success { background: var(--status-success-bg, #e3f1e8); color: var(--status-success-text, #234f38); }
+    .badge-error { background: var(--status-danger-bg, #fbe4e4); color: var(--status-danger-text, #8a3a3a); }
+    .badge-cancelled { background: var(--bg-page, #f5f7fa); color: var(--text-muted, #6b7280); }
+    .description { margin: 0; font-size: 13px; color: var(--text-muted, #4b5563); line-height: 1.5; }
     .actions { display: flex; gap: 8px; }
     .btn-run {
       flex: 1;
       padding: 9px 14px;
       border: none;
       border-radius: 6px;
-      background: #2f6f4f;
+      background: var(--primary, #2f6f4f);
       color: #fff;
       font-size: 13px;
       font-weight: 500;
       cursor: pointer;
     }
-    .btn-run:hover:not(:disabled) { background: #234f38; }
+    .btn-run:hover:not(:disabled) { background: var(--primary-dark, #234f38); }
     .btn-run:disabled { background: #a8c3b6; cursor: wait; }
     .btn-cancel {
       padding: 9px 14px;
-      border: 1px solid #dfe3e8;
+      border: 1px solid var(--border, #dfe3e8);
       border-radius: 6px;
-      background: #fff;
-      color: #8a3a3a;
+      background: var(--surface, #fff);
+      color: var(--status-danger-text, #8a3a3a);
       font-size: 13px;
       font-weight: 500;
       cursor: pointer;
     }
-    .btn-cancel:hover { background: #fbe4e4; }
+    .btn-cancel:hover { background: var(--status-danger-bg, #fbe4e4); }
     .log {
       max-height: 220px;
       overflow-y: auto;
-      background: #0f1620;
+      background: var(--log-bg, #0f1620);
       border-radius: 6px;
       padding: 10px 12px;
       font-family: 'SFMono-Regular', Consolas, monospace;
@@ -128,22 +141,38 @@ import { LogLevel, LogLine, ScenarioDef } from '../models/scenario.model';
     .log-error .log-msg { color: #f0a5a5; }
   `]
 })
-export class ScenarioCardComponent {
+export class ScenarioCardComponent implements OnInit {
   @Input({ required: true }) scenario!: ScenarioDef;
+  @Output() readonly info = new EventEmitter<ScenarioDef>();
 
   private readonly service = inject(ScenarioService);
 
   readonly running = signal(false);
   readonly logs = signal<LogLine[]>([]);
   readonly lastResult = signal<'idle' | 'success' | 'error' | 'cancelled'>('idle');
+  readonly runCount = signal(0);
 
   private abortController: AbortController | null = null;
+  private storageKey = '';
+
+  ngOnInit(): void {
+    // Persistido em localStorage — uma aula pode ter várias recargas de página, e o contador
+    // só é útil se sobreviver a isso.
+    this.storageKey = `hub-runs-${this.scenario.id}`;
+    const stored = Number(localStorage.getItem(this.storageKey) ?? '0');
+    this.runCount.set(Number.isFinite(stored) ? stored : 0);
+  }
 
   async run(): Promise<void> {
     this.running.set(true);
     this.logs.set([]);
     this.lastResult.set('idle');
-    this.addLog('info', `Iniciando ${this.scenario.title}…`);
+    this.runCount.update((n) => {
+      const next = n + 1;
+      localStorage.setItem(this.storageKey, String(next));
+      return next;
+    });
+    this.addLog('info', `Iniciando ${this.scenario.title}… (execução nº ${this.runCount()})`);
 
     const controller = new AbortController();
     this.abortController = controller;
@@ -217,6 +246,10 @@ export class ScenarioCardComponent {
         const level: LogLevel = d.statusCode >= 200 && d.statusCode < 300 ? 'success' : d.statusCode === 0 ? 'error' : 'warn';
         const label = d.request ? `Tentativa ${d.request}` : 'Requisição';
         this.addLog(level, `${label}: status ${d.statusCode} em ${d.durationMs}ms${d.note ? ' — ' + d.note : ''}`);
+        return;
+      }
+      if (typeof d.note === 'string') {
+        this.addLog('warn', d.note);
         return;
       }
       this.addLog('info', JSON.stringify(d));

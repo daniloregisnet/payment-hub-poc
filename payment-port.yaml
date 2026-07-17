@@ -1,31 +1,31 @@
-# scenario-runner — orquestrador dos 5 cenários de demonstração, consumido pelo painel
-# Angular. Roda com a MESMA ServiceAccount do settlement-queue de propósito: assim a chamada
-# dele pra payment-db reproduz fielmente o 403 que o settlement-queue real levaria (ver
-# AuthorizationPolicy settlement-deny-db / payment-db-authz em istio-config.yaml) — sem
+# payment-port — ponto de entrada/orquestrador dos 5 cenários de demonstração, consumido pelo
+# painel Angular. Roda com a MESMA ServiceAccount do payment-queue de propósito: assim a
+# chamada dele pra payment-db reproduz fielmente o 403 que o payment-queue real levaria (ver
+# AuthorizationPolicy payment-queue-deny-db / payment-db-authz em istio-config.yaml) — sem
 # precisar de kubectl exec dentro do pod real.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: scenario-runner
+  name: payment-port
   namespace: payment-hub
   labels:
-    app: scenario-runner
+    app: payment-port
     tier: control-plane-demo
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: scenario-runner
+      app: payment-port
   template:
     metadata:
       labels:
-        app: scenario-runner
+        app: payment-port
         tier: control-plane-demo
     spec:
-      serviceAccountName: settlement-queue
+      serviceAccountName: payment-queue
       containers:
-        - name: scenario-runner
-          image: scenario-runner:latest
+        - name: payment-port
+          image: payment-port:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8004
@@ -43,14 +43,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: scenario-runner
+  name: payment-port
   namespace: payment-hub
   labels:
-    app: scenario-runner
+    app: payment-port
     tier: control-plane-demo
 spec:
   selector:
-    app: scenario-runner
+    app: payment-port
   ports:
     - name: http
       port: 80

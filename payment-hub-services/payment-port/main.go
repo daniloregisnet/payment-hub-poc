@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -11,13 +12,14 @@ import (
 	"time"
 )
 
-// scenario-runner orquestra os 5 cenários de demonstração pra um painel de controle
-// (Angular) conseguir dispará-los com um clique, em vez de digitar curl na mão.
+// payment-port é o ponto de entrada do painel de demonstração: orquestra os 5 cenários pra
+// um painel de controle (Angular) conseguir dispará-los com um clique, em vez de digitar
+// curl na mão.
 //
-// Roda dentro do namespace payment-hub com a MESMA ServiceAccount do settlement-queue
+// Roda dentro do namespace payment-hub com a MESMA ServiceAccount do payment-queue
 // (ver manifests) — assim ele naturalmente tem a identidade certa pra reproduzir o
 // cenário de autorização negada sem precisar de kubectl exec: uma chamada direta daqui
-// pra payment-db recebe o mesmo 403 que o settlement-queue real receberia.
+// pra payment-db recebe o mesmo 403 que o payment-queue real receberia.
 //
 // Todos os handlers respeitam r.Context(): se o cliente cancelar (botão "Cancelar" no
 // painel, que aborta o fetch), o contexto da requisição é encerrado automaticamente pelo
@@ -25,9 +27,9 @@ import (
 // de continuar rodando "no vácuo" depois que ninguém está mais olhando.
 
 const (
-	paymentAPI  = "http://payment-api"
-	paymentDB   = "http://payment-db"
-	settlementQ = "http://settlement-queue"
+	paymentAPI   = "http://payment-api"
+	paymentDB    = "http://payment-db"
+	paymentQueue = "http://payment-queue"
 )
 
 var httpClient = &http.Client{Timeout: 20 * time.Second}
@@ -41,7 +43,7 @@ func main() {
 	mux.HandleFunc("/api/scenarios/circuit-breaker", circuitBreakerHandler)
 	mux.HandleFunc("/api/scenarios/auth-denied", authDeniedHandler)
 
-	log.Println("Scenario Runner listening on :8004")
+	log.Println("payment-port listening on :8004")
 	log.Fatal(http.ListenAndServe(":8004", withCORS(mux)))
 }
 
@@ -84,7 +86,8 @@ func doGet(ctx context.Context, url string) reqResult {
 		return reqResult{DurationMs: elapsed, Error: err.Error()}
 	}
 	defer resp.Body.Close()
-	return reqResult{StatusCode: resp.StatusCode, DurationMs: elapsed}
+	body, _ := io.ReadAll(resp.Body)
+	return reqResult{StatusCode: resp.StatusCode, DurationMs: elapsed, Body: string(body)}
 }
 
 func doPost(ctx context.Context, url string) reqResult {
@@ -99,7 +102,8 @@ func doPost(ctx context.Context, url string) reqResult {
 		return reqResult{DurationMs: elapsed, Error: err.Error()}
 	}
 	defer resp.Body.Close()
-	return reqResult{StatusCode: resp.StatusCode, DurationMs: elapsed}
+	body, _ := io.ReadAll(resp.Body)
+	return reqResult{StatusCode: resp.StatusCode, DurationMs: elapsed, Body: string(body)}
 }
 
 // sleepOrCancelled aguarda d, mas retorna cedo (false) se o cliente cancelar/desconectar —
@@ -111,6 +115,45 @@ func sleepOrCancelled(ctx context.Context, d time.Duration) bool {
 		return true
 	case <-ctx.Done():
 		return false
+	}
+}
+
+// waitUntilHealthy sonda a cadeia api->cache->db antes de começar um cenário que causa erro
+// nela (Timeout+Retry, Circuit Breaker). Rodar um desses cenários deixa o payment-db (e às
+// vezes o payment-api) marcados como "ejetados" pelo outlierDetection do DestinationRule por
+// um tempo — e o Envoy aumenta esse tempo a cada ejeção seguida (proteção real contra
+// "flapping", não é bug). Sem isso, clicar de novo logo em seguida mostra resultados
+// diferentes do esperado (503 instantâneo em vez do timeout/erro genuíno que o cenário quer
+// demonstrar), porque a chamada nem chega a sair do waypoint.
+func waitUntilHealthy(ctx context.Context, send func(event string, payload any)) bool {
+	const maxWait = 90 * time.Second
+	deadline := time.Now().Add(maxWait)
+	attempt := 0
+
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		res := doGet(ctx, paymentAPI+"/check-fraud")
+		if res.StatusCode == http.StatusOK {
+			if attempt > 0 {
+				send("progress", map[string]any{"note": "Ambiente saudável — iniciando o cenário."})
+			}
+			return true
+		}
+
+		attempt++
+		if time.Now().After(deadline) {
+			send("progress", map[string]any{"note": "Ambiente ainda se recuperando após 90s — seguindo mesmo assim."})
+			return true
+		}
+
+		send("progress", map[string]any{
+			"note": "Ambiente ainda se recuperando de um teste anterior (circuit breaker do Envoy, proteção contra flapping) — aguardando ficar saudável antes de começar…",
+		})
+		if !sleepOrCancelled(ctx, 3*time.Second) {
+			return false
+		}
 	}
 }
 
@@ -185,6 +228,10 @@ func timeoutRetryHandler(w http.ResponseWriter, r *http.Request) {
 
 	send("start", map[string]any{"scenario": "timeout-retry", "requests": 3})
 
+	if !waitUntilHealthy(ctx, send) {
+		return
+	}
+
 	for i := 1; i <= 3; i++ {
 		if ctx.Err() != nil {
 			return
@@ -229,7 +276,7 @@ func backpressureHandler(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			// doPost usa ctx — se o cliente cancelar, as chamadas em voo são abortadas
 			// imediatamente em vez de completar sem ninguém escutando.
-			res := doPost(ctx, settlementQ+"/enqueue-settlement")
+			res := doPost(ctx, paymentQueue+"/enqueue-settlement")
 			switch res.StatusCode {
 			case http.StatusAccepted:
 				atomic.AddInt64(&accepted, 1)
@@ -258,7 +305,7 @@ func backpressureHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	statusRes := doGet(ctx, settlementQ+"/status")
+	statusRes := doGet(ctx, paymentQueue+"/status")
 	send("done", map[string]any{
 		"scenario":    "backpressure",
 		"accepted":    accepted,
@@ -278,9 +325,13 @@ func circuitBreakerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	log.Println("[circuit-breaker] fase 1 iniciada")
 	send("start", map[string]any{"scenario": "circuit-breaker"})
 
+	if !waitUntilHealthy(ctx, send) {
+		return
+	}
+
+	log.Println("[circuit-breaker] fase 1 iniciada")
 	send("phase", map[string]any{"phase": 1, "label": "Causando erros consecutivos no DB"})
 	for i := 1; i <= 5; i++ {
 		if ctx.Err() != nil {
@@ -330,8 +381,8 @@ func circuitBreakerHandler(w http.ResponseWriter, r *http.Request) {
 
 func authDeniedHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	// scenario-runner roda com a ServiceAccount "settlement-queue" (ver manifests) — estas
-	// chamadas são avaliadas pelas MESMAS AuthorizationPolicy que o settlement-queue real
+	// payment-port roda com a ServiceAccount "payment-queue" (ver manifests) — estas
+	// chamadas são avaliadas pelas MESMAS AuthorizationPolicy que o payment-queue real
 	// enfrentaria, sem precisar de kubectl exec dentro do pod dele.
 	toAPI := doGet(ctx, paymentAPI+"/process-payment")
 	toDB := doGet(ctx, paymentDB+"/get-chargeback-history")

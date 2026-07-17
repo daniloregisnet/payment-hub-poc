@@ -1,14 +1,14 @@
 # Payment Hub — Deployments + Services (namespace payment-hub, Istio Ambient Mode)
 #
-# ServiceAccount dedicada só para settlement-queue: as AuthorizationPolicy em
-# istio-config.yaml usam identidade (SPIFFE principal) pra distinguir "settlement-queue" dos
+# ServiceAccount dedicada só para payment-queue: as AuthorizationPolicy em
+# istio-config.yaml usam identidade (SPIFFE principal) pra distinguir "payment-queue" dos
 # demais — sem isso todo mundo compartilharia a SA "default" e a regra de DENY não teria como
 # diferenciar quem está chamando. api/cache/db ficam na SA "default" mesmo (as regras de ALLOW
 # do guia são propositalmente genéricas pra "default service account").
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: settlement-queue
+  name: payment-queue
   namespace: payment-hub
 ---
 apiVersion: apps/v1
@@ -170,25 +170,25 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: settlement-queue
+  name: payment-queue
   namespace: payment-hub
   labels:
-    app: settlement-queue
+    app: payment-queue
     tier: queue
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: settlement-queue
+      app: payment-queue
   template:
     metadata:
       labels:
-        app: settlement-queue
+        app: payment-queue
         tier: queue
     spec:
-      serviceAccountName: settlement-queue
+      serviceAccountName: payment-queue
       containers:
-        - name: settlement-queue
+        - name: payment-queue
           image: payment-queue:latest
           imagePullPolicy: IfNotPresent
           ports:
@@ -207,14 +207,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: settlement-queue
+  name: payment-queue
   namespace: payment-hub
   labels:
-    app: settlement-queue
+    app: payment-queue
     tier: queue
 spec:
   selector:
-    app: settlement-queue
+    app: payment-queue
   ports:
     - name: http
       port: 80

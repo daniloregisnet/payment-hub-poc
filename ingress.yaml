@@ -27,13 +27,13 @@ spec:
     - payment-gateway
   http:
     # Precisa vir ANTES do catch-all — o painel Angular (rodando local via ng serve) fala
-    # com o scenario-runner por aqui, sem precisar de um port-forward só pra ele.
+    # com o payment-port por aqui, sem precisar de um port-forward só pra ele.
     - match:
         - uri:
             prefix: /api/scenarios
       route:
         - destination:
-            host: scenario-runner
+            host: payment-port
             port:
               number: 80
       timeout: 60s

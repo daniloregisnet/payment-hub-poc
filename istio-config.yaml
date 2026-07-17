@@ -110,18 +110,27 @@ spec:
 apiVersion: networking.istio.io/v1
 kind: VirtualService
 metadata:
-  name: settlement-queue
+  name: payment-queue
   namespace: payment-hub
 spec:
   hosts:
-    - settlement-queue
+    - payment-queue
   http:
     - match:
         - uri:
             prefix: /enqueue-settlement
       route:
         - destination:
-            host: settlement-queue
+            host: payment-queue
+            port:
+              number: 80
+      timeout: 10s
+    - match:
+        - uri:
+            prefix: /status
+      route:
+        - destination:
+            host: payment-queue
             port:
               number: 80
       timeout: 10s
@@ -183,10 +192,10 @@ spec:
 apiVersion: networking.istio.io/v1
 kind: DestinationRule
 metadata:
-  name: settlement-queue-dr
+  name: payment-queue-dr
   namespace: payment-hub
 spec:
-  host: settlement-queue
+  host: payment-queue
   trafficPolicy:
     connectionPool:
       http:
@@ -251,12 +260,12 @@ spec:
             hosts: ["payment-db", "payment-db.payment-hub.svc.cluster.local"]
             paths: ["/get-chargeback-history", "/check-fraud-score"]
 ---
-# settlement-queue tem SA própria — regra explícita de DENY pra deixar claro que ela nunca deve
+# payment-queue tem SA própria — regra explícita de DENY pra deixar claro que ela nunca deve
 # falar direto com o DB (mesmo que uma ALLOW futura fique frouxa demais, o DENY tem prioridade).
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
-  name: settlement-deny-db
+  name: payment-queue-deny-db
   namespace: payment-hub
 spec:
   targetRefs:
@@ -267,7 +276,7 @@ spec:
   rules:
     - from:
         - source:
-            principals: ["cluster.local/ns/payment-hub/sa/settlement-queue"]
+            principals: ["cluster.local/ns/payment-hub/sa/payment-queue"]
       to:
         - operation:
             hosts: ["payment-db", "payment-db.payment-hub.svc.cluster.local"]
@@ -275,7 +284,7 @@ spec:
 ---
 # IMPORTANTE: assim que QUALQUER AuthorizationPolicy com action=ALLOW é anexada ao waypoint
 # (targetRefs), o waypoint passa a default-deny TODO o tráfego que passa por ele — não só os
-# hosts citados nas ALLOW acima. payment-api e settlement-queue não tinham política própria e
+# hosts citados nas ALLOW acima. payment-api e payment-queue não tinham política própria e
 # ficaram bloqueados pra tráfego leste-oeste (só sobreviviam via ingress, que não passa pelo
 # waypoint). As duas políticas abaixo restauram acesso amplo (sem restrição de origem) pra elas
 # — são o "entrypoint público" e a "fila", não fazem sentido restritos por identidade aqui.
@@ -298,7 +307,7 @@ spec:
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
-  name: settlement-queue-authz
+  name: payment-queue-authz
   namespace: payment-hub
 spec:
   targetRefs:
@@ -309,4 +318,4 @@ spec:
   rules:
     - to:
         - operation:
-            hosts: ["settlement-queue", "settlement-queue.payment-hub.svc.cluster.local"]
+            hosts: ["payment-queue", "payment-queue.payment-hub.svc.cluster.local"]

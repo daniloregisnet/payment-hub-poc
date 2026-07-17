@@ -15,19 +15,57 @@
 .page-header h1 {
   margin: 0 0 4px;
   font-size: 24px;
+  color: var(--heading, #14202c);
 }
 
 .subtitle {
   margin: 0;
-  color: #6b7280;
+  color: var(--text-muted, #6b7280);
   font-size: 14px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn-icon {
+  padding: 9px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #dfe3e8);
+  background: var(--surface, #fff);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.btn-icon:hover {
+  background: var(--surface-hover, #f0f0f0);
+}
+
+.btn-help {
+  padding: 10px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #dfe3e8);
+  background: var(--surface, #fff);
+  color: var(--text, #1f2937);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.btn-help:hover {
+  background: var(--surface-hover, #f0f0f0);
 }
 
 .btn-kiali {
   flex-shrink: 0;
   padding: 10px 16px;
   border-radius: 6px;
-  background: #14202c;
+  background: var(--primary, #2f6f4f);
   color: #fff;
   text-decoration: none;
   font-size: 13px;
@@ -36,11 +74,68 @@
 }
 
 .btn-kiali:hover {
-  background: #263544;
+  background: var(--primary-dark, #234f38);
 }
 
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
   gap: 18px;
+}
+
+/* Roteiro (drawer) */
+.roteiro h2 {
+  margin: 0 0 4px;
+  font-size: 18px;
+  color: var(--heading, #14202c);
+}
+
+.roteiro-duration {
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+}
+
+.roteiro section {
+  margin-top: 20px;
+}
+
+.roteiro h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--primary, #2f6f4f);
+}
+
+.roteiro p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text, #1f2937);
+}
+
+/* Ajuda (dialog) */
+.help-section {
+  margin-bottom: 24px;
+}
+
+.help-section:last-child {
+  margin-bottom: 0;
+}
+
+.help-section h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  color: var(--heading, #14202c);
+}
+
+.help-section p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text, #1f2937);
+}
+
+.help-section p:last-child {
+  margin-bottom: 0;
 }

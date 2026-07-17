@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -61,6 +63,21 @@ func checkFraudHandler(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(resp.Body)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"service":"payment-api","fraud_check":true,"cache_response":%s}\n`, string(body))
+	// Repassa o status real do cache/DB (era sempre 200 antes, mesmo quando a cadeia falhava
+	// — isso escondia erro de propósito atrás de um "sucesso" no painel de demonstração).
+	w.WriteHeader(resp.StatusCode)
+	fmt.Fprintf(w, `{"service":"payment-api","fraud_check":true,"cache_response":%s}`+"\n", jsonOrString(body))
+}
+
+// jsonOrString devolve body como está se já for JSON válido, ou o embrulha como string JSON
+// caso contrário — sem isso, uma resposta não-JSON do cache (ex.: "no healthy upstream", que o
+// Envoy devolve quando o destino está ejetado pelo circuit breaker) quebraria a sintaxe do
+// JSON que este serviço monta.
+func jsonOrString(body []byte) []byte {
+	trimmed := bytes.TrimSpace(body)
+	if json.Valid(trimmed) {
+		return trimmed
+	}
+	quoted, _ := json.Marshal(string(body))
+	return quoted
 }

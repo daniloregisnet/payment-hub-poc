@@ -4,12 +4,60 @@
       <h1>Payment Hub — Painel de Cenários</h1>
       <p class="subtitle">Dispare os cenários de demonstração do Istio Ambient Mode com um clique.</p>
     </div>
-    <a [href]="kialiUrl" target="_blank" rel="noopener" class="btn-kiali">Abrir Kiali ↗</a>
+    <div class="header-actions">
+      <button type="button" class="btn-icon" title="Alternar tema claro/escuro" (click)="theme.toggle()">
+        {{ theme.theme() === 'dark' ? '☀️' : '🌙' }}
+      </button>
+      <button type="button" class="btn-help" (click)="helpOpen.set(true)">Ajuda</button>
+      <a [href]="kialiUrl" target="_blank" rel="noopener" class="btn-kiali">Abrir Kiali ↗</a>
+    </div>
   </header>
 
   <div class="grid">
     @for (scenario of scenarios; track scenario.id) {
-      <app-scenario-card [scenario]="scenario" />
+      <app-scenario-card [scenario]="scenario" (info)="openRoteiro($event)" />
     }
   </div>
 </div>
+
+<p-drawer [(visible)]="roteiroOpen" position="right" [style]="{ width: '30rem' }" header="Roteiro da demonstração">
+  @if (selectedScenario(); as s) {
+    <div class="roteiro">
+      <h2>{{ s.icon }} {{ s.title }}</h2>
+      <span class="roteiro-duration">Duração estimada: {{ s.estimatedDuration }}</span>
+
+      <section>
+        <h3>Breve descrição</h3>
+        <p>{{ s.roteiro.descricao }}</p>
+      </section>
+
+      <section>
+        <h3>Após o clique, você verá…</h3>
+        <p>{{ s.roteiro.aposClique }}</p>
+      </section>
+
+      <section>
+        <h3>O que explicar na aula</h3>
+        <p>{{ s.roteiro.explicar }}</p>
+      </section>
+
+      <section>
+        <h3>Configuração Istio por trás</h3>
+        <p>{{ s.roteiro.istioConfig }}</p>
+      </section>
+    </div>
+  }
+</p-drawer>
+
+<p-dialog [(visible)]="helpOpen" header="Ajuda — Kiali, Grafana e configuração do Istio" [modal]="true" [style]="{ width: '50rem' }" [breakpoints]="{ '960px': '90vw' }">
+  <div class="help">
+    @for (section of helpSections; track section.title) {
+      <section class="help-section">
+        <h3>{{ section.icon }} {{ section.title }}</h3>
+        @for (paragraph of section.body; track $index) {
+          <p>{{ paragraph }}</p>
+        }
+      </section>
+    }
+  </div>
+</p-dialog>

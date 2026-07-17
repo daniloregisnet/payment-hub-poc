@@ -19,7 +19,7 @@ func main() {
 	http.HandleFunc("/enqueue-settlement", enqueueHandler)
 	http.HandleFunc("/status", statusHandler)
 
-	log.Println("Settlement Queue Service listening on :8003")
+	log.Println("Payment Queue Service listening on :8003")
 	log.Fatal(http.ListenAndServe(":8003", nil))
 }
 
@@ -36,7 +36,7 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"service":"settlement-queue","queue_size":%d,"max_queue":%d,"rate_limit":"10/sec"}\n`, size, maxQueue)
+	fmt.Fprintf(w, `{"service":"payment-queue","queue_size":%d,"max_queue":%d,"rate_limit":"10/sec"}\n`, size, maxQueue)
 }
 
 func enqueueHandler(w http.ResponseWriter, r *http.Request) {
@@ -65,5 +65,5 @@ func enqueueHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	fmt.Fprintf(w, `{"service":"settlement-queue","status":"enqueued","settlement_id":"settle_xyz","queue_size":%d}\n`, queueSize)
+	fmt.Fprintf(w, `{"service":"payment-queue","status":"enqueued","settlement_id":"settle_xyz","queue_size":%d}\n`, queueSize)
 }
