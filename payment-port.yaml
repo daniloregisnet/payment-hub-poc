@@ -1,7 +1,7 @@
 # payment-port — ponto de entrada/orquestrador dos 5 cenários de demonstração, consumido pelo
 # painel Angular. Roda com a MESMA ServiceAccount do payment-queue de propósito: assim a
 # chamada dele pra payment-db reproduz fielmente o 403 que o payment-queue real levaria (ver
-# AuthorizationPolicy payment-queue-deny-db / payment-db-authz em istio-config.yaml) — sem
+# AuthorizationPolicy payment-queue-deny-db / payment-db-authz em istio/payment-db.yaml) — sem
 # precisar de kubectl exec dentro do pod real.
 apiVersion: apps/v1
 kind: Deployment

@@ -1,0 +1,85 @@
+# payment-cache — contrato de rede isolado deste serviço. Config mesh-wide (mTLS) fica em
+# istio/mesh.yaml.
+
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: payment-cache
+  namespace: payment-hub
+spec:
+  hosts:
+    - payment-cache
+  http:
+    - match:
+        - uri:
+            prefix: /check-transaction-history
+      route:
+        - destination:
+            host: payment-cache
+            port:
+              number: 80
+      timeout: 5s
+      retries:
+        attempts: 3
+        perTryTimeout: 1500ms
+        retryOn: 5xx,reset,connect-failure
+    # /get-card-limit é o salto que check-fraud usa pra alcançar o payment-db (ver
+    # payment-hub-services/api/main.go checkFraudHandler) — timeout maior porque é quem os
+    # cenários de Timeout/Circuit Breaker usam pra simular "DB lento"/"DB offline" (delay até
+    # 15s).
+    - match:
+        - uri:
+            prefix: /get-card-limit
+      route:
+        - destination:
+            host: payment-cache
+            port:
+              number: 80
+      timeout: 16s
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: payment-cache-dr
+  namespace: payment-hub
+spec:
+  host: payment-cache
+  trafficPolicy:
+    connectionPool:
+      http:
+        http1MaxPendingRequests: 100
+        maxRequestsPerConnection: 2
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 100
+---
+# Anexada ao WAYPOINT (targetRefs), não ao workload (selector): com um waypoint no caminho, o
+# ztunnel do pod de destino só enxerga o waypoint como origem da conexão L4
+# ("src.identity=.../sa/waypoint") — uma AuthorizationPolicy anexada via "selector" ao workload
+# é avaliada pelo ztunnel usando essa identidade errada e rejeita tudo, mesmo a chamada sendo
+# legítima. Anexar ao waypoint via targetRefs faz a política ser avaliada lá, que tem
+# visibilidade da identidade mTLS original de quem chamou — e aí paths/hosts (L7) funcionam
+# corretamente. Todas as AuthorizationPolicy deste projeto seguem o mesmo padrão.
+#
+# Só aceita chamadas da SA "default" (payment-api roda nela) nesses dois paths.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: payment-cache-authz
+  namespace: payment-hub
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: waypoint
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/payment-hub/sa/default"]
+      to:
+        - operation:
+            hosts: ["payment-cache", "payment-cache.payment-hub.svc.cluster.local"]
+            paths: ["/check-transaction-history", "/get-card-limit"]

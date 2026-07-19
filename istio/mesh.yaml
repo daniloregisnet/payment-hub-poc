@@ -1,0 +1,19 @@
+# Payment Hub — Config Istio mesh-wide (namespace payment-hub), Ambient Mode.
+#
+# Requer o waypoint proxy aplicado (istioctl waypoint apply -n payment-hub --enroll-namespace)
+# — em Ambient puro (só ztunnel) as VirtualServices/DestinationRules HTTP e as regras de
+# AuthorizationPolicy baseadas em path são recursos L7 e não são avaliados sem waypoint; o
+# ztunnel sozinho só cobre L4 (mTLS, allow/deny por identidade sem path).
+#
+# Este arquivo reúne só o que é verdadeiramente mesh-wide. O "contrato de rede" de cada
+# serviço (VirtualService + DestinationRule + AuthorizationPolicy) vive isolado em
+# istio/<serviço>.yaml.
+
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: payment-hub-mtls
+  namespace: payment-hub
+spec:
+  mtls:
+    mode: STRICT

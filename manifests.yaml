@@ -1,7 +1,7 @@
 # Payment Hub — Deployments + Services (namespace payment-hub, Istio Ambient Mode)
 #
-# ServiceAccount dedicada só para payment-queue: as AuthorizationPolicy em
-# istio-config.yaml usam identidade (SPIFFE principal) pra distinguir "payment-queue" dos
+# ServiceAccount dedicada só para payment-queue: as AuthorizationPolicy em istio/*.yaml
+# usam identidade (SPIFFE principal) pra distinguir "payment-queue" dos
 # demais — sem isso todo mundo compartilharia a SA "default" e a regra de DENY não teria como
 # diferenciar quem está chamando. api/cache/db ficam na SA "default" mesmo (as regras de ALLOW
 # do guia são propositalmente genéricas pra "default service account").

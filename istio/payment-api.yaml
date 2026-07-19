@@ -1,0 +1,81 @@
+# payment-api — contrato de rede isolado deste serviço (rota, timeouts/retries, proteção
+# contra sobrecarga e autorização no waypoint). Config mesh-wide (mTLS) fica em istio/mesh.yaml.
+
+# process-payment e check-fraud viram UM único VirtualService (mesmo host) — dois objetos
+# separados pro mesmo host geram "undefined behavior" segundo o próprio istioctl analyze
+# (IST0109); a forma correta é múltiplas entradas http: na mesma VirtualService.
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: payment-api
+  namespace: payment-hub
+spec:
+  hosts:
+    - payment-api
+  http:
+    - match:
+        - uri:
+            prefix: /process-payment
+      route:
+        - destination:
+            host: payment-api
+            port:
+              number: 80
+      timeout: 10s
+      retries:
+        attempts: 3
+        perTryTimeout: 3s
+        retryOn: 5xx,reset,connect-failure
+    - match:
+        - uri:
+            prefix: /check-fraud
+      route:
+        - destination:
+            host: payment-api
+            port:
+              number: 80
+      timeout: 5s
+      retries:
+        attempts: 3
+        perTryTimeout: 1500ms
+        retryOn: 5xx,reset,connect-failure
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: payment-api-dr
+  namespace: payment-hub
+spec:
+  host: payment-api
+  trafficPolicy:
+    connectionPool:
+      http:
+        http1MaxPendingRequests: 100
+        maxRequestsPerConnection: 2
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 100
+---
+# IMPORTANTE: assim que QUALQUER AuthorizationPolicy com action=ALLOW é anexada ao waypoint
+# (targetRefs), ele passa a default-deny TODO o tráfego que passa por ele — não só os hosts
+# citados nas ALLOW dos outros serviços. Sem esta regra, payment-api ficaria bloqueado pra
+# tráfego leste-oeste assim que qualquer outro serviço do namespace ganhasse sua própria ALLOW
+# (só sobreviveria via ingress, que não passa pelo waypoint). É o "entrypoint público", não faz
+# sentido restrito por identidade de origem aqui.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: payment-api-authz
+  namespace: payment-hub
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: waypoint
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            hosts: ["payment-api", "payment-api.payment-hub.svc.cluster.local"]

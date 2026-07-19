@@ -1,0 +1,89 @@
+# payment-db — contrato de rede isolado deste serviço: quem pode chamá-lo (payment-cache, via
+# ALLOW) e quem está explicitamente proibido de chamá-lo (payment-queue, via DENY) vivem juntos
+# aqui, porque as duas regras juntas são o que define o acesso a este serviço. Config mesh-wide
+# (mTLS) fica em istio/mesh.yaml.
+
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: payment-db
+  namespace: payment-hub
+spec:
+  hosts:
+    - payment-db
+  http:
+    - match:
+        - uri:
+            prefix: /get-chargeback-history
+      route:
+        - destination:
+            host: payment-db
+            port:
+              number: 80
+      timeout: 10s
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: payment-db-dr
+  namespace: payment-hub
+spec:
+  host: payment-db
+  trafficPolicy:
+    connectionPool:
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 1
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 100
+---
+# Anexada ao WAYPOINT (targetRefs) — ver nota completa em istio/payment-cache.yaml sobre por
+# que não dá pra anexar via "selector" ao workload em Ambient Mode.
+#
+# Só aceita chamadas da SA "default" (payment-cache roda nela) nesses dois paths.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: payment-db-authz
+  namespace: payment-hub
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: waypoint
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/payment-hub/sa/default"]
+      to:
+        - operation:
+            hosts: ["payment-db", "payment-db.payment-hub.svc.cluster.local"]
+            paths: ["/get-chargeback-history", "/check-fraud-score"]
+---
+# payment-queue tem SA própria — regra explícita de DENY pra deixar claro que ela nunca deve
+# falar direto com o DB (mesmo que a ALLOW acima fique frouxa demais no futuro, o DENY tem
+# prioridade). payment-port roda com a MESMA SA do payment-queue de propósito, pra reproduzir
+# esse 403 na demo sem precisar de kubectl exec no pod real (ver payment-port.yaml).
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: payment-queue-deny-db
+  namespace: payment-hub
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: waypoint
+  action: DENY
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/payment-hub/sa/payment-queue"]
+      to:
+        - operation:
+            hosts: ["payment-db", "payment-db.payment-hub.svc.cluster.local"]
+            ports: ["80"]

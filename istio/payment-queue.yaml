@@ -1,0 +1,73 @@
+# payment-queue — contrato de rede isolado deste serviço. A regra que PROÍBE payment-queue de
+# falar com payment-db (payment-queue-deny-db) fica em istio/payment-db.yaml, junto com a regra
+# que efetivamente protege o DB — juntas elas definem o acesso a payment-db. Config mesh-wide
+# (mTLS) fica em istio/mesh.yaml.
+
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: payment-queue
+  namespace: payment-hub
+spec:
+  hosts:
+    - payment-queue
+  http:
+    - match:
+        - uri:
+            prefix: /enqueue-settlement
+      route:
+        - destination:
+            host: payment-queue
+            port:
+              number: 80
+      timeout: 10s
+    - match:
+        - uri:
+            prefix: /status
+      route:
+        - destination:
+            host: payment-queue
+            port:
+              number: 80
+      timeout: 10s
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: payment-queue-dr
+  namespace: payment-hub
+spec:
+  host: payment-queue
+  trafficPolicy:
+    connectionPool:
+      http:
+        # 100 pra caber a rajada inteira do cenário de Backpressure (100 requisições
+        # paralelas) sem que o circuit breaker do mesh rejeite antes da fila interna do
+        # app (max 50) conseguir ser o gargalo real que o cenário quer demonstrar.
+        http1MaxPendingRequests: 100
+        maxRequestsPerConnection: 1
+    outlierDetection:
+      consecutive5xxErrors: 2
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 100
+---
+# Anexada ao WAYPOINT (targetRefs) — ver nota completa em istio/payment-cache.yaml. Sem
+# política própria, payment-queue ficaria bloqueado pra tráfego leste-oeste assim que qualquer
+# outra ALLOW no namespace ativasse o default-deny do waypoint. É a "fila", não faz sentido
+# restrita por identidade de origem aqui.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: payment-queue-authz
+  namespace: payment-hub
+spec:
+  targetRefs:
+    - kind: Gateway
+      group: gateway.networking.k8s.io
+      name: waypoint
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            hosts: ["payment-queue", "payment-queue.payment-hub.svc.cluster.local"]

@@ -1,0 +1,13 @@
+# Habilita tracing mesh-wide (namespace raiz istio-system) via o extensionProvider
+# "jaeger-zipkin" configurado no ConfigMap istio (istio-configmap-tracing-patch.yaml).
+# Sampling 100% é só para esta demo — em produção seria um percentual bem menor.
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: mesh-tracing
+  namespace: istio-system
+spec:
+  tracing:
+    - providers:
+        - name: jaeger-zipkin
+      randomSamplingPercentage: 100.0

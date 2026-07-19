@@ -50,9 +50,9 @@ func processPaymentHandler(w http.ResponseWriter, r *http.Request) {
 func checkFraudHandler(w http.ResponseWriter, r *http.Request) {
 	// Repassa delay/error pra cadeia inteira (cache -> db) — check-fraud precisa alcançar o
 	// payment-db pra valer pros cenários de Timeout/Circuit Breaker, que simulam "DB lento" e
-	// "DB offline" especificamente (ver payment-db-dr em istio-config.yaml).
+	// "DB offline" especificamente (ver payment-db-dr em istio/payment-db.yaml).
 	url := "http://payment-cache/get-card-limit?" + r.URL.Query().Encode()
-	resp, err := http.Get(url)
+	resp, err := forward(r, url)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, `{"error":"failed to check fraud database"}\n`)
@@ -80,4 +80,37 @@ func jsonOrString(body []byte) []byte {
 	}
 	quoted, _ := json.Marshal(string(body))
 	return quoted
+}
+
+// traceHeaders lista os headers que precisam atravessar cada hop — sem repassar isso, o Envoy
+// (ingressgateway/waypoint) não consegue juntar os spans de cada serviço num único trace, e cada
+// hop vira uma árvore órfã no Jaeger.
+var traceHeaders = []string{
+	"x-request-id",
+	"traceparent",
+	"tracestate",
+	"x-b3-traceid",
+	"x-b3-spanid",
+	"x-b3-parentspanid",
+	"x-b3-sampled",
+	"x-b3-flags",
+	"b3",
+	"x-ot-span-context",
+	"x-cloud-trace-context",
+	"grpc-trace-bin",
+}
+
+// forward cria uma requisição GET para url copiando os headers de trace do request de entrada,
+// e a executa.
+func forward(in *http.Request, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(in.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, h := range traceHeaders {
+		if v := in.Header.Get(h); v != "" {
+			req.Header.Set(h, v)
+		}
+	}
+	return http.DefaultClient.Do(req)
 }
