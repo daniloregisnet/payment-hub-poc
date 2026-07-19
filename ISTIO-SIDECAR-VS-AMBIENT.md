@@ -6,16 +6,23 @@
 > diagramas de L7 usam o caso real `payment-api → payment-cache` como exemplo, não um cenário
 > genérico.
 
+> **TL;DR sobre qual usar:** Ambient é o modelo **mais novo** e é a **recomendação atual do
+> projeto Istio para implantações novas**, desde que graduou pra GA (Istio 1.24, nov/2024).
+> Sidecar **não está descontinuado** — continua totalmente suportado — mas deixou de ser o único
+> caminho padrão, e é hoje considerado o modelo "clássico"/anterior. Detalhes de quando cada um
+> faz mais sentido: [seção 8](#8-quando-escolher-qual--e-qual-é-recomendado-hoje).
+
 ## Índice
 
 1. [O problema que o service mesh resolve](#1-o-problema-que-o-service-mesh-resolve)
 2. [Sidecar Mode: o modelo clássico](#2-sidecar-mode-o-modelo-clássico)
 3. [Ambient Mode: o novo modelo](#3-ambient-mode-o-novo-modelo)
-4. [Comparação lado a lado](#4-comparação-lado-a-lado)
-5. [Linha do tempo](#5-linha-do-tempo)
-6. [Este projeto como exemplo prático](#6-este-projeto-como-exemplo-prático)
-7. [Quando escolher qual](#7-quando-escolher-qual)
-8. [Referências](#8-referências)
+4. [ztunnel (L4) vs waypoint (L7): quem resolve o quê](#4-ztunnel-l4-vs-waypoint-l7-quem-resolve-o-quê)
+5. [Comparação lado a lado](#5-comparação-lado-a-lado)
+6. [Linha do tempo](#6-linha-do-tempo)
+7. [Este projeto como exemplo prático](#7-este-projeto-como-exemplo-prático)
+8. [Quando escolher qual — e qual é recomendado hoje](#8-quando-escolher-qual--e-qual-é-recomendado-hoje)
+9. [Referências](#9-referências)
 
 ---
 
@@ -70,6 +77,10 @@ aplicação.
 ---
 
 ## 3. Ambient Mode: o novo modelo
+
+> Este é o modelo **mais moderno** dos dois, e a **recomendação atual do projeto Istio** para
+> quem está começando um mesh do zero — ver [seção 8](#8-quando-escolher-qual--e-qual-é-recomendado-hoje)
+> para o raciocínio completo de quando isso vale e quando não vale.
 
 O Ambient Mode parte de uma pergunta diferente: **a maioria dos serviços só precisa de L4**
 (mTLS, identidade, allow/deny simples). Só uma minoria precisa de **L7** (roteamento por path,
@@ -143,7 +154,81 @@ waypoint do namespace `payment-hub`.
 
 ---
 
-## 4. Comparação lado a lado
+## 4. ztunnel (L4) vs waypoint (L7): quem resolve o quê
+
+Esta é a divisão de trabalho central do Ambient Mode, e vale deixar inequívoca: **ztunnel nunca
+decodifica HTTP** — ele só enxerga conexões (quem fala com quem, criptografado ou não). **Só o
+waypoint enxerga o conteúdo da requisição** (path, método, header, status de resposta). Se um
+recurso do Istio depende de olhar dentro do HTTP, ele *só* funciona onde há waypoint — não
+importa quão simples a regra pareça.
+
+### 4.1 O que o ztunnel resolve — Camada 4 (transporte)
+
+Camada 4 é sobre **conexões**, não sobre o que trafega dentro delas: identidade de quem abriu a
+conexão, se ela é criptografada, e regras do tipo "esta identidade/IP/porta pode ou não conectar
+aqui" — tudo isso sem nunca abrir o pacote HTTP.
+
+O ztunnel resolve isso automaticamente para **todo Pod de um namespace habilitado pro Ambient**,
+sem nenhuma configuração extra por serviço:
+
+- **mTLS** — criptografa e autentica toda conexão leste-oeste via HBONE, usando a identidade
+  SPIFFE de origem/destino. É quem implementa o `PeerAuthentication` STRICT de
+  [istio/mesh.yaml](istio/mesh.yaml).
+- **Autorização L4** — a única forma de `AuthorizationPolicy` que o ztunnel sozinho consegue
+  avaliar é a que usa **apenas** `source.principals`, `source.namespaces`, `source.ipBlocks` e
+  `operation.ports`. Qualquer regra com `hosts`, `paths` ou `methods` é L7 e exige waypoint.
+- **Telemetria L4** — bytes transferidos, RTT, conexões abertas/fechadas por identidade.
+
+O que o ztunnel **não sabe fazer** — porque isso exigiria decodificar HTTP, e ele nunca faz isso:
+rotear por path, aplicar timeout/retry por rota, autorizar por Host header, ou gerar um span de
+tracing com método/status HTTP.
+
+### 4.2 O que o waypoint resolve — Camada 7 (aplicação)
+
+Camada 7 é sobre **o conteúdo da requisição HTTP**: qual path foi chamado, com qual método, qual
+foi o status da resposta — e qualquer regra que dependa de enxergar isso.
+
+O waypoint é um Envoy completo (o mesmo motor de proxy do modelo Sidecar, só que compartilhado
+por namespace em vez de injetado por Pod). Ele resolve:
+
+- **Roteamento HTTP** — `VirtualService` (`match.uri.prefix`, `timeout`, `retries`). Em
+  [istio/payment-cache.yaml](istio/payment-cache.yaml) é o waypoint quem decide que
+  `/get-card-limit` tem timeout de 16s e `/check-transaction-history` tem 5s.
+- **Autorização L7** — `AuthorizationPolicy` com `hosts` (Host header), `paths` ou `methods`.
+  **Todas** as policies deste projeto usam `hosts` no mínimo — por isso **todas** dependem do
+  waypoint, mesmo `payment-api-authz` e `payment-queue-authz`, que não chegam a restringir por
+  `paths`.
+- **Circuit breaking HTTP-aware** — `DestinationRule.outlierDetection` conta erros
+  **`consecutive5xxErrors`**, o que exige entender o status code da resposta HTTP — informação
+  que só existe depois de decodificar a camada de aplicação.
+- **Tracing L7** — é o waypoint (junto com o ingressgateway) quem gera os spans com
+  `http.method`, `http.url`, `http.status_code` que aparecem no Jaeger (ver
+  [README-SOLUCAO.md](README-SOLUCAO.md)) — o ztunnel nunca vê esses campos, só o volume de bytes
+  trafegado.
+
+### 4.3 Tabela-resumo
+
+| Recurso Istio | Camada | Quem resolve | Funciona sem waypoint? |
+|---|---|---|---|
+| `PeerAuthentication` (mTLS) | L4 | ztunnel | Sim |
+| `AuthorizationPolicy` só com `principals`/`namespaces`/`ipBlocks`/`ports` | L4 | ztunnel | Sim |
+| `AuthorizationPolicy` com `hosts`/`paths`/`methods` | L7 | waypoint | **Não** |
+| `VirtualService` (roteamento por path, timeout, retries) | L7 | waypoint | **Não** |
+| `DestinationRule.outlierDetection` (circuit breaker por 5xx) | L7 | waypoint | **Não** |
+| Métricas de bytes/RTT por conexão | L4 | ztunnel | Sim |
+| Spans de tracing com method/path/status HTTP | L7 | waypoint + ingressgateway | **Não** |
+
+> **Consequência prática, usando este projeto como exemplo:** se o waypoint de `payment-hub`
+> fosse removido hoje, o mTLS de [istio/mesh.yaml](istio/mesh.yaml) continuaria garantido pelo
+> ztunnel — mas **toda** `AuthorizationPolicy` em `istio/*.yaml` pararia de ser avaliada (todas
+> usam `hosts`), a malha voltaria a permitir qualquer serviço falar com qualquer outro
+> (inclusive `payment-queue` → `payment-db`, que hoje é bloqueado), e rotas/timeouts/circuit
+> breaker parariam de ser aplicados. Cada capacidade L7 é opt-in — e some junto com o waypoint
+> que a implementa.
+
+---
+
+## 5. Comparação lado a lado
 
 | Aspecto | Sidecar | Ambient |
 |---|---|---|
@@ -158,7 +243,7 @@ waypoint do namespace `payment-hub`.
 
 ---
 
-## 5. Linha do tempo
+## 6. Linha do tempo
 
 ![Linha do tempo Sidecar → Ambient](docs/istio-timeline.svg)
 *Fonte: [docs/istio-timeline.puml](docs/istio-timeline.puml)*
@@ -168,7 +253,7 @@ waypoint do namespace `payment-hub`.
 
 ---
 
-## 6. Este projeto como exemplo prático
+## 7. Este projeto como exemplo prático
 
 O `payment-hub` já roda em Ambient Mode, e cada peça teórica acima tem um artefato correspondente
 no repositório:
@@ -184,7 +269,14 @@ no repositório:
 
 ---
 
-## 7. Quando escolher qual
+## 8. Quando escolher qual — e qual é recomendado hoje
+
+**Recomendação atual do projeto Istio:** para uma implantação nova, comece por **Ambient**. É o
+modelo mais moderno, é para onde o projeto está investindo desenvolvimento desde que graduou pra
+GA (Istio 1.24, nov/2024), e é hoje a opção oficialmente recomendada na documentação do Istio
+para novos meshes. Isso **não** significa que Sidecar esteja depreciado ou vá deixar de ser
+suportado — ele continua sendo uma opção de primeira classe, só deixou de ser o único caminho e
+de ser o default "óbvio".
 
 **Ambient tende a fazer mais sentido quando:**
 - O cluster tem muitos serviços "simples" que só precisam de mTLS (a maioria dos casos reais).
@@ -200,7 +292,7 @@ no repositório:
 
 ---
 
-## 8. Referências
+## 9. Referências
 
 - Documentação oficial do Ambient Mode: `https://istio.io/latest/docs/ambient/overview/`
 - Anúncio original do Ambient Mesh (2022): `https://istio.io/latest/blog/2022/introducing-ambient-mesh/`
