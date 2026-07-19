@@ -1,0 +1,22 @@
+@startuml ambient-sequence-l4
+title Fluxo de requisição — Ambient, só L4 (sem waypoint)
+
+participant "payment-cache\n(app)" as A
+participant "ztunnel\n(nó de payment-cache)" as ZA
+participant "ztunnel\n(nó de payment-db)" as ZB
+participant "payment-db\n(app)" as B
+
+A -> ZA : GET /get-chargeback-history\n(redirecionado via CNI)
+activate ZA
+ZA -> ZB : mTLS HBONE\n(identidade SPIFFE do Pod A)
+deactivate ZA
+activate ZB
+ZB -> ZB : checa identidade L4\n(allow/deny simples, sem path)
+ZB -> B : encaminha em claro
+activate B
+B --> ZB : resposta
+deactivate B
+ZB --> ZA : mTLS HBONE
+deactivate ZB
+ZA --> A : resposta
+@enduml

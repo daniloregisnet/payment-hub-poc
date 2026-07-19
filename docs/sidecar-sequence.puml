@@ -1,0 +1,23 @@
+@startuml sidecar-sequence
+title Fluxo de requisição — Modo Sidecar
+
+participant "payment-api\n(app)" as A
+participant "Envoy sidecar\n(payment-api)" as SA
+participant "Envoy sidecar\n(payment-cache)" as SB
+participant "payment-cache\n(app)" as B
+
+A -> SA : GET /get-card-limit\n(iptables redireciona)
+activate SA
+SA -> SA : aplica retries, timeout,\ncircuit breaker\n(DestinationRule)
+SA -> SB : mTLS\n(identidade SPIFFE do Pod A)
+deactivate SA
+activate SB
+SB -> SB : AuthorizationPolicy\n(valida identidade de origem)
+SB -> B : encaminha em claro\n(localhost, dentro do Pod)
+activate B
+B --> SB : resposta
+deactivate B
+SB --> SA : mTLS
+deactivate SB
+SA --> A : resposta
+@enduml

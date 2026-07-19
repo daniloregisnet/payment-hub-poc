@@ -1,0 +1,47 @@
+@startuml ambient-architecture
+title Istio Ambient Mode — Arquitetura
+
+skinparam componentStyle rectangle
+skinparam backgroundColor transparent
+
+package "Control Plane (istio-system)" {
+  [istiod] as istiod
+}
+
+node "Nó Kubernetes" {
+  [ztunnel\n(DaemonSet, 1 por nó)] as zt1
+  package "Pod payment-api\n(sem sidecar)" {
+    [App payment-api] as app1
+  }
+  package "Pod payment-cache\n(sem sidecar)" {
+    [App payment-cache] as app2
+  }
+}
+
+package "Namespace payment-hub" {
+  [waypoint\n(Deployment, L7 — opcional)] as wp
+}
+
+app1 -down-> zt1 : redirecionado pelo\nCNI do Istio (sem\niptables no Pod)
+zt1 -right-> zt1 : mTLS via HBONE\n(ztunnel-a-ztunnel, L4)
+zt1 ..> wp : só quando há política\nou rota L7 no caminho
+wp -down-> app2 : encaminha após\naplicar L7
+zt1 -down-> app2 : direto, quando\nsó L4 basta
+
+istiod ..> zt1 : xDS (config L4, certificados)
+istiod ..> wp : xDS (config L7)
+
+note right of zt1
+  1 processo por NÓ inteiro
+  (não por Pod). Cobre só L4.
+end note
+
+note right of wp
+  Só existe se o namespace/
+  serviço precisar de L7.
+  Implementado como recurso
+  Gateway API (kind: Gateway,
+  gatewayClassName: istio-waypoint).
+end note
+
+@enduml

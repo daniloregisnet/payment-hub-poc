@@ -1,0 +1,28 @@
+@startuml ambient-sequence-l7
+title Fluxo de requisição — Ambient, com Waypoint (L7)
+' Caso real: payment-api -> payment-cache (ver istio/payment-cache.yaml)
+
+participant "payment-api\n(app)" as A
+participant "ztunnel\n(nó de payment-api)" as ZA
+participant "waypoint\n(payment-hub)" as WP
+participant "ztunnel\n(nó de payment-cache)" as ZB
+participant "payment-cache\n(app)" as B
+
+A -> ZA : GET /get-card-limit
+activate ZA
+ZA -> WP : mTLS HBONE\n(identidade de payment-api)
+deactivate ZA
+activate WP
+WP -> WP : VirtualService (timeout 16s)\nAuthorizationPolicy\n(paths: /get-card-limit)
+WP -> ZB : mTLS HBONE\n(identidade agora é do\nWAYPOINT, não mais de A)
+deactivate WP
+activate ZB
+ZB -> ZB : o ztunnel de destino só\nenxerga "src=waypoint" —\npor isso a policy é anexada\nao waypoint (targetRefs),\nnão ao workload (selector)
+ZB -> B : encaminha em claro
+activate B
+B --> ZB : resposta
+deactivate B
+ZB --> WP : mTLS HBONE
+deactivate ZB
+WP --> A : resposta (via ztunnels)
+@enduml

@@ -1,0 +1,40 @@
+@startuml sidecar-architecture
+title Istio Sidecar Mode — Arquitetura
+
+skinparam componentStyle rectangle
+skinparam backgroundColor transparent
+
+package "Control Plane (istio-system)" {
+  [istiod] as istiod
+}
+
+node "Nó Kubernetes" {
+  package "Pod payment-api" {
+    [App payment-api] as app1
+    [Envoy sidecar\n(istio-proxy)] as sidecar1
+    [iptables\n(istio-init, roda 1x no start)] as ipt1
+  }
+  package "Pod payment-cache" {
+    [App payment-cache] as app2
+    [Envoy sidecar\n(istio-proxy)] as sidecar2
+    [iptables\n(istio-init, roda 1x no start)] as ipt2
+  }
+}
+
+app1 -down-> ipt1 : tráfego de saída\nredirecionado
+ipt1 -down-> sidecar1
+sidecar1 -right-> sidecar2 : mTLS (HTTP/2)
+sidecar2 -down-> ipt2
+ipt2 -down-> app2
+
+istiod ..> sidecar1 : xDS (config, certificados)
+istiod ..> sidecar2 : xDS (config, certificados)
+
+note bottom of sidecar1
+  1 processo Envoy completo (L4 + L7)
+  por Pod — mesmo que o serviço só
+  precise de mTLS, ele paga o custo
+  de um proxy L7 inteiro.
+end note
+
+@enduml

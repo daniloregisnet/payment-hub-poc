@@ -1,0 +1,24 @@
+@startuml istio-timeline
+title Istio — Sidecar → Ambient (linha do tempo aproximada)
+
+left to right direction
+skinparam backgroundColor transparent
+
+rectangle "2017–2018\nIstio 0.x → 1.0\nSidecar é o único modelo" as t1
+rectangle "set/2022\nAmbient Mesh\nanunciado" as t2
+rectangle "meados 2023\nIstio 1.18\nAmbient em alpha" as t3
+rectangle "2024\nIstio 1.22\nAmbient em beta" as t4
+rectangle "nov/2024\nIstio 1.24\nAmbient GA" as t5
+
+t1 -right-> t2
+t2 -right-> t3
+t3 -right-> t4
+t4 -right-> t5
+
+note bottom of t5
+  Este projeto roda Istio 1.30.2
+  (ver istio-configmap-tracing-patch.yaml)
+  — já bem depois do GA do Ambient.
+end note
+
+@enduml
